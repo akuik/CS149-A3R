@@ -14,7 +14,7 @@
 
 #define THREADS_PER_BLOCK 256
 
-// Helper function to round an integer up to the next power of 2
+// helper function to round an integer up to the next power of 2
 static inline int64_t nextPow2(int64_t n) {
     n--;
     n |= n >> 1;
@@ -22,12 +22,12 @@ static inline int64_t nextPow2(int64_t n) {
     n |= n >> 4;
     n |= n >> 8;
     n |= n >> 16;
-    n |= n >> 32;  // For 64-bit numbers
+    n |= n >> 32;  // (64-bit: N > ~4.1mil keeps failing otherwise)
     n++;
     return n;
 }
 
-// Upsweep kernel for the exclusive scan
+
 __global__ void upsweep_kernel(int* data, int64_t n, int64_t two_d, int64_t two_dplus1) {
     int64_t threadId = blockIdx.x * blockDim.x + threadIdx.x;
     int64_t index = threadId * two_dplus1;
@@ -37,7 +37,6 @@ __global__ void upsweep_kernel(int* data, int64_t n, int64_t two_d, int64_t two_
     }
 }
 
-// Downsweep kernel for the exclusive scan
 __global__ void downsweep_kernel(int* data, int64_t n, int64_t two_d, int64_t two_dplus1) {
     int64_t threadId = blockIdx.x * blockDim.x + threadIdx.x;
     int64_t index = threadId * two_dplus1;
@@ -49,7 +48,7 @@ __global__ void downsweep_kernel(int* data, int64_t n, int64_t two_d, int64_t tw
     }
 }
 
-// Compute flags kernel for find_repeats
+// compute flags kernel for find_repeats
 __global__ void compute_flags_kernel(int* device_input, int* device_flags, int length) {
     int64_t i = blockIdx.x * blockDim.x + threadIdx.x;
 
@@ -60,7 +59,7 @@ __global__ void compute_flags_kernel(int* device_input, int* device_flags, int l
     }
 }
 
-// Write output kernel for find_repeats
+// write output kernel for find_repeats
 __global__ void write_output_kernel(int* device_flags, int* scan_result, int* device_output, int length) {
     int64_t i = blockIdx.x * blockDim.x + threadIdx.x;
 
@@ -70,21 +69,18 @@ __global__ void write_output_kernel(int* device_flags, int* scan_result, int* de
     }
 }
 
-// exclusive_scan --
-// Implementation of an exclusive scan on global memory array `input`,
-// with results placed in global memory `result`.
+// exclusive_scan
 void exclusive_scan(int* input, int N, int* result) {
-    int64_t n = nextPow2(N);  // Round up to the next power of 2
+    int64_t n = nextPow2(N); 
 
-    // Copy input to result (since we're working in-place on result)
+    // inp -> res
     cudaMemcpy(result, input, N * sizeof(int), cudaMemcpyDeviceToDevice);
 
-    // Initialize elements beyond N to zero
     if (n > N) {
         cudaMemset(result + N, 0, (n - N) * sizeof(int));
     }
 
-    // Upsweep phase
+    // upsweep phase
     for (int64_t two_d = 1; two_d < n; two_d *= 2) {
         int64_t two_dplus1 = 2 * two_d;
 
@@ -97,10 +93,10 @@ void exclusive_scan(int* input, int N, int* result) {
         }
     }
 
-    // Set last element to zero
+    // set last element to zero
     cudaMemset(result + n - 1, 0, sizeof(int));
 
-    // Downsweep phase
+    // downsweep
     for (int64_t two_d = n / 2; two_d >= 1; two_d /= 2) {
         int64_t two_dplus1 = 2 * two_d;
 
@@ -193,13 +189,13 @@ int find_repeats(int* device_input, int length, int* device_output) {
     cudaMalloc((void**)&device_flags, n * sizeof(int));
     cudaMalloc((void**)&scan_result, n * sizeof(int));
 
-    // Initialize device_flags and scan_result beyond length to zero
+    // initialize device_flags and scan_result beyond length to zero
     if (n > length) {
         cudaMemset(device_flags + length, 0, (n - length) * sizeof(int));
         cudaMemset(scan_result + length, 0, (n - length) * sizeof(int));
     }
 
-    // Compute device_flags
+    // compute device_flags
     int numThreads = THREADS_PER_BLOCK;
     int numBlocks = (length + numThreads - 1) / numThreads;
 
@@ -220,7 +216,7 @@ int find_repeats(int* device_input, int length, int* device_output) {
 
     total_repeats = last_scan + last_flag;
 
-    // Write output
+    // write out output
     numBlocks = (length + numThreads - 1) / numThreads;
     write_output_kernel<<<numBlocks, numThreads>>>(device_flags, scan_result, device_output, length);
     cudaDeviceSynchronize();
