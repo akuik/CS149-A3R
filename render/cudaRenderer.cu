@@ -14,9 +14,6 @@
 #include "sceneLoader.h"
 #include "util.h"
 
-////////////////////////////////////////////////////////////////////////////////////////
-// Putting all the CUDA kernels here
-////////////////////////////////////////////////////////////////////////////////////////
 
 struct GlobalConstants {
 
@@ -32,7 +29,7 @@ struct GlobalConstants {
     int imageHeight;
     float* imageData;
 
-    // New variables for tiled rendering
+    // new variables: tiled rendering
     int* circleTileList;
     int* tileCircleCounts;
     int* tileCircleStartIndices;
@@ -44,12 +41,11 @@ struct GlobalConstants {
 
 __constant__ GlobalConstants cuConstRendererParams;
 
-// Read-only lookup tables used to quickly compute noise
+// RO lookup tables (noise comp)
 __constant__ int    cuConstNoiseYPermutationTable[256];
 __constant__ int    cuConstNoiseXPermutationTable[256];
 __constant__ float  cuConstNoise1DValueTable[256];
 
-// Color ramp table needed for the color ramp lookup shader
 #define COLOR_MAP_SIZE 5
 __constant__ float  cuConstColorRamp[COLOR_MAP_SIZE][3];
 
@@ -57,8 +53,6 @@ __constant__ float  cuConstColorRamp[COLOR_MAP_SIZE][3];
 #include "noiseCuda.cu_inl"
 #include "lookupColor.cu_inl"
 // #include "exclusiveScan.cu_inl"
-
-// Include the existing kernels for advancing animations here
 
 
 __global__ void kernelAdvanceSnowflake() {
@@ -77,12 +71,8 @@ __global__ void kernelAdvanceSnowflake() {
     float* positionPtr = &cuConstRendererParams.position[index3];
     float* velocityPtr = &cuConstRendererParams.velocity[index3];
 
-    // loads from global memory
     float3 position = *((float3*)positionPtr);
     float3 velocity = *((float3*)velocityPtr);
-
-    // hack to make farther circles move more slowly, giving the
-    // illusion of parallax
     float forceScaling = fmin(fmax(1.f - position.z, .1f), 1.f); // clamp
 
     // add some noise to the motion to make the snow flutter
@@ -138,7 +128,7 @@ __global__ void kernelAdvanceSnowflake() {
 
 __global__ void kernelAdvanceBouncingBalls() {
     const float dt = 1.f / 60.f;
-    const float kGravity = -2.8f; // sorry Newton
+    const float kGravity = -2.8f; // sorry Newton v2
     const float kDragCoeff = -0.8f;
     const float epsilon = 0.001f;
 
@@ -208,7 +198,8 @@ __global__ void kernelAdvanceFireWorks() {
     if (index >= cuConstRendererParams.numCircles)
         return;
 
-    if (0 <= index && index < NUM_FIREWORKS) { // firework center; no update 
+    if (0 <= index && index < NUM_FIREWORKS) { 
+        // firework center; no update 
         return;
     }
 
@@ -256,9 +247,6 @@ __global__ void kernelAdvanceFireWorks() {
     }
 }
 
-////////////////////////////////////////////////////////////////////////////////////////
-// Kernels for rendering
-////////////////////////////////////////////////////////////////////////////////////////
 
 __global__ void kernelClearImage(float r, float g, float b, float a) {
 
@@ -277,7 +265,6 @@ __global__ void kernelClearImage(float r, float g, float b, float a) {
     *(float4*)(&cuConstRendererParams.imageData[offset]) = value;
 }
 
-// Kernel to clear the image for the snowflake background
 __global__ void kernelClearImageSnowflake() {
 
     int imageX = blockIdx.x * blockDim.x + threadIdx.x;
@@ -296,7 +283,7 @@ __global__ void kernelClearImageSnowflake() {
     *(float4*)(&cuConstRendererParams.imageData[offset]) = value;
 }
 
-// Kernel to render tiles
+
 __global__ void kernelRenderTiles() {
 
     int tileX = blockIdx.x;
@@ -331,14 +318,14 @@ __global__ void kernelRenderTiles() {
             float4 pixelColor;
             pixelColor = *(float4*)(&cuConstRendererParams.imageData[4 * (pixelY * imageWidth + pixelX)]);
 
-            // Process all circles in order
+            // circle processing (in order)
             for (int i = 0; i < numCirclesInTile; i++) {
                 int c = cuConstRendererParams.circleTileList[circleStartIndex + i];
 
                 float3 p = *(float3*)(&cuConstRendererParams.position[3 * c]);
                 float rad = cuConstRendererParams.radius[c];
 
-                // Use circleInBoxConservative to quickly eliminate circles that can't contribute
+                // Use circleInBoxConservative() to eliminate/prune off circles
                 float circleCenterX = p.x;
                 float circleCenterY = p.y;
                 float circleRadius = rad;
@@ -352,7 +339,7 @@ __global__ void kernelRenderTiles() {
                                              boxL, boxR, boxT, boxB))
                     continue;
 
-                // Now perform the full point-in-circle test
+                // else (passed)
                 float diffX = p.x - pixelCenterNorm.x;
                 float diffY = p.y - pixelCenterNorm.y;
                 float pixelDist = diffX * diffX + diffY * diffY;
@@ -361,7 +348,7 @@ __global__ void kernelRenderTiles() {
                 if (pixelDist > maxDist)
                     continue;
 
-                // Compute shading and blend into pixelColor
+
                 float3 rgb;
                 float alpha;
 
@@ -392,13 +379,12 @@ __global__ void kernelRenderTiles() {
                 pixelColor.w = alpha + oneMinusAlpha * pixelColor.w;
             }
 
-            // Write the final color to the image
+            // final color write
             *(float4*)(&cuConstRendererParams.imageData[4 * (pixelY * imageWidth + pixelX)]) = pixelColor;
         }
     }
 }
 
-////////////////////////////////////////////////////////////////////////////////////////
 
 CudaRenderer::CudaRenderer() {
     image = NULL;
@@ -415,7 +401,7 @@ CudaRenderer::CudaRenderer() {
     cudaDeviceRadius = NULL;
     cudaDeviceImageData = NULL;
 
-    // Initialize new variables
+    // palceholder: new vals
     circleTileLists = NULL;
     tileCircleCounts = NULL;
     tileCircleStartIndices = NULL;
@@ -455,7 +441,7 @@ CudaRenderer::~CudaRenderer() {
         cudaFree(cudaDeviceRadius);
         cudaFree(cudaDeviceImageData);
 
-        // Free new device variables
+        // free created vals
         cudaFree(cudaCircleTileList);
         cudaFree(cudaTileCircleCounts);
         cudaFree(cudaTileCircleStartIndices);
@@ -471,7 +457,7 @@ CudaRenderer::~CudaRenderer() {
 const Image*
 CudaRenderer::getImage() {
 
-    // Need to copy contents of the rendered image from device memory
+    // need to copy contents of the rendered image from device memory
     // before we expose the Image object to the caller
 
     printf("Copying image data from device\n");
@@ -516,6 +502,9 @@ CudaRenderer::setup() {
     // By this time the scene should be loaded. Now copy all the key
     // data structures into device memory so they are accessible to
     // CUDA kernels
+    //
+    // See the CUDA Programmer's Guide for descriptions of
+    // cudaMalloc and cudaMemcpy
 
     cudaMalloc(&cudaDevicePosition, sizeof(float) * 3 * numCircles);
     cudaMalloc(&cudaDeviceVelocity, sizeof(float) * 3 * numCircles);
@@ -528,7 +517,14 @@ CudaRenderer::setup() {
     cudaMemcpy(cudaDeviceColor, color, sizeof(float) * 3 * numCircles, cudaMemcpyHostToDevice);
     cudaMemcpy(cudaDeviceRadius, radius, sizeof(float) * numCircles, cudaMemcpyHostToDevice);
 
-    // Initialize parameters in constant memory
+    // Initialize parameters in constant memory.  We didn't talk about
+    // constant memory in class, but the use of read-only constant
+    // memory here is an optimization over just sticking these values
+    // in device global memory.  NVIDIA GPUs have a few special tricks
+    // for optimizing access to constant memory.  Using global memory
+    // here would have worked just as well.  See the Programmer's
+    // Guide for more information about constant memory.
+
     GlobalConstants params;
     params.sceneName = sceneName;
     params.numCircles = numCircles;
@@ -540,7 +536,7 @@ CudaRenderer::setup() {
     params.radius = cudaDeviceRadius;
     params.imageData = cudaDeviceImageData;
 
-    // Set tile dimensions
+    // NOTE: tile dimensions set to (32 x 32)
     tileWidth = 32;
     tileHeight = 32;
     tilesPerRow = (params.imageWidth + tileWidth - 1) / tileWidth;
@@ -551,10 +547,9 @@ CudaRenderer::setup() {
     params.tileHeight = tileHeight;
     params.tilesPerRow = tilesPerRow;
 
-    // Build circle-tile mapping on the host
     buildCircleTileLists();
 
-    // Copy tile data to device
+    // copy tile data to device
     cudaMalloc(&cudaCircleTileList, sizeof(int) * totalTiles * maxCirclesPerTile);
     cudaMalloc(&cudaTileCircleCounts, sizeof(int) * totalTiles);
     cudaMalloc(&cudaTileCircleStartIndices, sizeof(int) * totalTiles);
@@ -567,10 +562,10 @@ CudaRenderer::setup() {
     params.tileCircleCounts = cudaTileCircleCounts;
     params.tileCircleStartIndices = cudaTileCircleStartIndices;
 
-    // Copy parameters to constant memory
+    // copy parameters to constant memory
     cudaMemcpyToSymbol(cuConstRendererParams, &params, sizeof(GlobalConstants));
 
-    // Copy over the noise lookup tables
+    // copy over the noise lookup tables
     int* permX;
     int* permY;
     float* value1D;
@@ -579,7 +574,7 @@ CudaRenderer::setup() {
     cudaMemcpyToSymbol(cuConstNoiseYPermutationTable, permY, sizeof(int) * 256);
     cudaMemcpyToSymbol(cuConstNoise1DValueTable, value1D, sizeof(float) * 256);
 
-    // Copy over the color table
+    // copy over the color table
     float lookupTable[COLOR_MAP_SIZE][3] = {
         {1.f, 1.f, 1.f},
         {1.f, 1.f, 1.f},
@@ -595,26 +590,26 @@ void CudaRenderer::buildCircleTileLists() {
 
     int numTiles = totalTiles;
 
-    // Initialize per-tile circle lists
+    // init per-tile circle lists
     std::vector<std::vector<int>> tileCircleIndices(numTiles);
 
     for (int c = 0; c < numCircles; c++) {
         float3 p = *(float3*)(&position[3 * c]);
         float rad = radius[c];
 
-        // Compute bounding box in image coordinates
+        // bounding box compute (img coordinates)
         int minX = static_cast<int>(image->width * (p.x - rad));
         int maxX = static_cast<int>(image->width * (p.x + rad)) + 1;
         int minY = static_cast<int>(image->height * (p.y - rad));
         int maxY = static_cast<int>(image->height * (p.y + rad)) + 1;
 
-        // Clamp to image boundaries
+        // boundary clamping
         minX = std::max(minX, 0);
         maxX = std::min(maxX, image->width - 1);
         minY = std::max(minY, 0);
         maxY = std::min(maxY, image->height - 1);
 
-        // Compute tile indices
+        // tile indices compute
         int tileMinX = minX / tileWidth;
         int tileMaxX = maxX / tileWidth;
         int tileMinY = minY / tileHeight;
@@ -628,7 +623,6 @@ void CudaRenderer::buildCircleTileLists() {
         }
     }
 
-    // Build flat arrays for device use
     tileCircleCounts = new int[numTiles];
     tileCircleStartIndices = new int[numTiles];
 
@@ -652,7 +646,7 @@ void CudaRenderer::buildCircleTileLists() {
     }
 }
 
-// allocOutputImage --
+
 void
 CudaRenderer::allocOutputImage(int width, int height) {
 
@@ -664,11 +658,9 @@ CudaRenderer::allocOutputImage(int width, int height) {
     imageHeight = height;
 }
 
-// clearImage --
 void
 CudaRenderer::clearImage() {
-
-    // 256 threads per block is a healthy number
+    // NOTE: REQ SETTING 256 THREADS per block (16 * 16)
     dim3 blockDim(16, 16, 1);
     dim3 gridDim(
         (imageWidth + blockDim.x - 1) / blockDim.x,
@@ -689,7 +681,6 @@ CudaRenderer::advanceAnimation() {
     dim3 blockDim(256, 1);
     dim3 gridDim((numCircles + blockDim.x - 1) / blockDim.x);
 
-    // Only advance animation for certain scenes
     if (sceneName == SNOWFLAKES) {
         kernelAdvanceSnowflake<<<gridDim, blockDim>>>();
     } else if (sceneName == BOUNCING_BALLS) {
@@ -704,8 +695,6 @@ CudaRenderer::advanceAnimation() {
 
 void
 CudaRenderer::render() {
-
-    // Launch kernelRenderTiles with blocks per tile
     dim3 blockDim(16, 16, 1);
     dim3 gridDim(tilesPerRow, tilesPerColumn);
 
