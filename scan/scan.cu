@@ -14,23 +14,23 @@
 
 #define THREADS_PER_BLOCK 256
 
-
 // helper function to round an integer up to the next power of 2
-static inline int nextPow2(int n) {
+static inline int64_t nextPow2(int64_t n) {
     n--;
     n |= n >> 1;
     n |= n >> 2;
     n |= n >> 4;
     n |= n >> 8;
     n |= n >> 16;
+    n |= n >> 32;  // For 64-bit numbers
     n++;
     return n;
 }
 
 // Upsweep kernel for the exclusive scan
-__global__ void upsweep_kernel(int* data, int n, int two_d, int two_dplus1) {
-    int threadId = blockIdx.x * blockDim.x + threadIdx.x;
-    int index = threadId * two_dplus1;
+__global__ void upsweep_kernel(int* data, int64_t n, int64_t two_d, int64_t two_dplus1) {
+    int64_t threadId = blockIdx.x * blockDim.x + threadIdx.x;
+    int64_t index = threadId * two_dplus1;
 
     if (index + two_dplus1 - 1 < n) {
         data[index + two_dplus1 - 1] += data[index + two_d - 1];
@@ -38,9 +38,9 @@ __global__ void upsweep_kernel(int* data, int n, int two_d, int two_dplus1) {
 }
 
 // Downsweep kernel for the exclusive scan
-__global__ void downsweep_kernel(int* data, int n, int two_d, int two_dplus1) {
-    int threadId = blockIdx.x * blockDim.x + threadIdx.x;
-    int index = threadId * two_dplus1;
+__global__ void downsweep_kernel(int* data, int64_t n, int64_t two_d, int64_t two_dplus1) {
+    int64_t threadId = blockIdx.x * blockDim.x + threadIdx.x;
+    int64_t index = threadId * two_dplus1;
 
     if (index + two_dplus1 - 1 < n) {
         int t = data[index + two_d - 1];
@@ -50,8 +50,8 @@ __global__ void downsweep_kernel(int* data, int n, int two_d, int two_dplus1) {
 }
 
 // Compute flags kernel for find_repeats
-__global__ void compute_flags_kernel(int* device_input, int* device_flags, int length) {
-    int i = blockIdx.x * blockDim.x + threadIdx.x;
+__global__ void compute_flags_kernel(int* device_input, int* device_flags, int64_t length) {
+    int64_t i = blockIdx.x * blockDim.x + threadIdx.x;
 
     if (i < length - 1) {
         device_flags[i] = (device_input[i] == device_input[i + 1]) ? 1 : 0;
@@ -61,8 +61,8 @@ __global__ void compute_flags_kernel(int* device_input, int* device_flags, int l
 }
 
 // Write output kernel for find_repeats
-__global__ void write_output_kernel(int* device_flags, int* scan_result, int* device_output, int length) {
-    int i = blockIdx.x * blockDim.x + threadIdx.x;
+__global__ void write_output_kernel(int* device_flags, int* scan_result, int* device_output, int64_t length) {
+    int64_t i = blockIdx.x * blockDim.x + threadIdx.x;
 
     if (i < length && device_flags[i] == 1) {
         int pos = scan_result[i];
@@ -71,8 +71,8 @@ __global__ void write_output_kernel(int* device_flags, int* scan_result, int* de
 }
 
 // exclusive_scan --
-void exclusive_scan(int* input, int N, int* result) {
-    int n = nextPow2(N);  // Round up to the next power of 2
+void exclusive_scan(int* input, int64_t N, int* result) {
+    int64_t n = nextPow2(N);  // Round up to the next power of 2
 
     // Copy input to result (since we're working in-place on result)
     cudaMemcpy(result, input, N * sizeof(int), cudaMemcpyDeviceToDevice);
@@ -83,16 +83,13 @@ void exclusive_scan(int* input, int N, int* result) {
     }
 
     // Upsweep phase
-    for (int two_d = 1; two_d < n; two_d *= 2) {
-        int two_dplus1 = 2 * two_d;
+    for (int64_t two_d = 1; two_d < n; two_d *= 2) {
+        int64_t two_dplus1 = 2 * two_d;
 
-        int num_threads = (n / two_dplus1);
-        if (n % two_dplus1 != 0) {
-            num_threads += 1;
-        }
+        int64_t num_threads = (n + two_dplus1 - 1) / two_dplus1;
 
         if (num_threads > 0) {
-            int numBlocks = (num_threads + THREADS_PER_BLOCK - 1) / THREADS_PER_BLOCK;
+            int64_t numBlocks = (num_threads + THREADS_PER_BLOCK - 1) / THREADS_PER_BLOCK;
             upsweep_kernel<<<numBlocks, THREADS_PER_BLOCK>>>(result, n, two_d, two_dplus1);
             cudaDeviceSynchronize();
         }
@@ -102,16 +99,13 @@ void exclusive_scan(int* input, int N, int* result) {
     cudaMemset(result + n - 1, 0, sizeof(int));
 
     // Downsweep phase
-    for (int two_d = n / 2; two_d >= 1; two_d /= 2) {
-        int two_dplus1 = 2 * two_d;
+    for (int64_t two_d = n / 2; two_d >= 1; two_d /= 2) {
+        int64_t two_dplus1 = 2 * two_d;
 
-        int num_threads = (n / two_dplus1);
-        if (n % two_dplus1 != 0) {
-            num_threads += 1;
-        }
+        int64_t num_threads = (n + two_dplus1 - 1) / two_dplus1;
 
         if (num_threads > 0) {
-            int numBlocks = (num_threads + THREADS_PER_BLOCK - 1) / THREADS_PER_BLOCK;
+            int64_t numBlocks = (num_threads + THREADS_PER_BLOCK - 1) / THREADS_PER_BLOCK;
             downsweep_kernel<<<numBlocks, THREADS_PER_BLOCK>>>(result, n, two_d, two_dplus1);
             cudaDeviceSynchronize();
         }
@@ -122,11 +116,11 @@ void exclusive_scan(int* input, int N, int* result) {
 double cudaScan(int* inarray, int* end, int* resultarray) {
     int* device_result;
     int* device_input;
-    int N = end - inarray;
+    int64_t N = end - inarray;
 
     // This code rounds the arrays provided to exclusive_scan up
     // to a power of 2
-    int rounded_length = nextPow2(N);
+    int64_t rounded_length = nextPow2(N);
 
     cudaMalloc((void**)&device_result, sizeof(int) * rounded_length);
     cudaMalloc((void**)&device_input, sizeof(int) * rounded_length);
@@ -158,7 +152,7 @@ double cudaScan(int* inarray, int* end, int* resultarray) {
 
 // cudaScanThrust --
 double cudaScanThrust(int* inarray, int* end, int* resultarray) {
-    int length = end - inarray;
+    int64_t length = end - inarray;
     thrust::device_ptr<int> d_input = thrust::device_malloc<int>(length);
     thrust::device_ptr<int> d_output = thrust::device_malloc<int>(length);
 
@@ -181,8 +175,8 @@ double cudaScanThrust(int* inarray, int* end, int* resultarray) {
 }
 
 // find_repeats --
-int find_repeats(int* device_input, int length, int* device_output) {
-    int n = nextPow2(length);
+int find_repeats(int* device_input, int64_t length, int* device_output) {
+    int64_t n = nextPow2(length);
 
     // Allocate device_flags and scan_result
     int* device_flags;
@@ -198,8 +192,8 @@ int find_repeats(int* device_input, int length, int* device_output) {
     }
 
     // Compute device_flags
-    int numThreads = THREADS_PER_BLOCK;
-    int numBlocks = (length + numThreads - 1) / numThreads;
+    int64_t numThreads = THREADS_PER_BLOCK;
+    int64_t numBlocks = (length + numThreads - 1) / numThreads;
 
     compute_flags_kernel<<<numBlocks, numThreads>>>(device_input, device_flags, length);
     cudaDeviceSynchronize();
@@ -231,10 +225,10 @@ int find_repeats(int* device_input, int length, int* device_output) {
 }
 
 // cudaFindRepeats --
-double cudaFindRepeats(int* input, int length, int* output, int* output_length) {
+double cudaFindRepeats(int* input, int64_t length, int* output, int* output_length) {
     int* device_input;
     int* device_output;
-    int rounded_length = nextPow2(length);
+    int64_t rounded_length = nextPow2(length);
 
     cudaMalloc((void**)&device_input, rounded_length * sizeof(int));
     cudaMalloc((void**)&device_output, rounded_length * sizeof(int));
