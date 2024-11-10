@@ -56,7 +56,7 @@ __constant__ float  cuConstColorRamp[COLOR_MAP_SIZE][3];
 #include "circleBoxTest.cu_inl"
 #include "noiseCuda.cu_inl"
 #include "lookupColor.cu_inl"
-#include "exclusiveScan.cu_inl"
+// #include "exclusiveScan.cu_inl"
 
 ////////////////////////////////////////////////////////////////////////////////////////
 // Kernels for advancing animation
