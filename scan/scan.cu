@@ -14,7 +14,7 @@
 
 #define THREADS_PER_BLOCK 256
 
-// helper function to round an integer up to the next power of 2
+// Helper function to round an integer up to the next power of 2
 static inline int64_t nextPow2(int64_t n) {
     n--;
     n |= n >> 1;
@@ -50,7 +50,7 @@ __global__ void downsweep_kernel(int* data, int64_t n, int64_t two_d, int64_t tw
 }
 
 // Compute flags kernel for find_repeats
-__global__ void compute_flags_kernel(int* device_input, int* device_flags, int64_t length) {
+__global__ void compute_flags_kernel(int* device_input, int* device_flags, int length) {
     int64_t i = blockIdx.x * blockDim.x + threadIdx.x;
 
     if (i < length - 1) {
@@ -61,7 +61,7 @@ __global__ void compute_flags_kernel(int* device_input, int* device_flags, int64
 }
 
 // Write output kernel for find_repeats
-__global__ void write_output_kernel(int* device_flags, int* scan_result, int* device_output, int64_t length) {
+__global__ void write_output_kernel(int* device_flags, int* scan_result, int* device_output, int length) {
     int64_t i = blockIdx.x * blockDim.x + threadIdx.x;
 
     if (i < length && device_flags[i] == 1) {
@@ -71,7 +71,9 @@ __global__ void write_output_kernel(int* device_flags, int* scan_result, int* de
 }
 
 // exclusive_scan --
-void exclusive_scan(int* input, int64_t N, int* result) {
+// Implementation of an exclusive scan on global memory array `input`,
+// with results placed in global memory `result`.
+void exclusive_scan(int* input, int N, int* result) {
     int64_t n = nextPow2(N);  // Round up to the next power of 2
 
     // Copy input to result (since we're working in-place on result)
@@ -89,7 +91,7 @@ void exclusive_scan(int* input, int64_t N, int* result) {
         int64_t num_threads = (n + two_dplus1 - 1) / two_dplus1;
 
         if (num_threads > 0) {
-            int64_t numBlocks = (num_threads + THREADS_PER_BLOCK - 1) / THREADS_PER_BLOCK;
+            int numBlocks = (int)((num_threads + THREADS_PER_BLOCK - 1) / THREADS_PER_BLOCK);
             upsweep_kernel<<<numBlocks, THREADS_PER_BLOCK>>>(result, n, two_d, two_dplus1);
             cudaDeviceSynchronize();
         }
@@ -105,7 +107,7 @@ void exclusive_scan(int* input, int64_t N, int* result) {
         int64_t num_threads = (n + two_dplus1 - 1) / two_dplus1;
 
         if (num_threads > 0) {
-            int64_t numBlocks = (num_threads + THREADS_PER_BLOCK - 1) / THREADS_PER_BLOCK;
+            int numBlocks = (int)((num_threads + THREADS_PER_BLOCK - 1) / THREADS_PER_BLOCK);
             downsweep_kernel<<<numBlocks, THREADS_PER_BLOCK>>>(result, n, two_d, two_dplus1);
             cudaDeviceSynchronize();
         }
@@ -113,10 +115,14 @@ void exclusive_scan(int* input, int64_t N, int* result) {
 }
 
 // cudaScan --
+// This function is a timing wrapper around the student's
+// implementation of scan - it copies the input to the GPU
+// and times the invocation of the exclusive_scan() function
+// above.
 double cudaScan(int* inarray, int* end, int* resultarray) {
     int* device_result;
     int* device_input;
-    int64_t N = end - inarray;
+    int N = end - inarray;
 
     // This code rounds the arrays provided to exclusive_scan up
     // to a power of 2
@@ -152,7 +158,7 @@ double cudaScan(int* inarray, int* end, int* resultarray) {
 
 // cudaScanThrust --
 double cudaScanThrust(int* inarray, int* end, int* resultarray) {
-    int64_t length = end - inarray;
+    int length = end - inarray;
     thrust::device_ptr<int> d_input = thrust::device_malloc<int>(length);
     thrust::device_ptr<int> d_output = thrust::device_malloc<int>(length);
 
@@ -175,7 +181,9 @@ double cudaScanThrust(int* inarray, int* end, int* resultarray) {
 }
 
 // find_repeats --
-int find_repeats(int* device_input, int64_t length, int* device_output) {
+// Given an array of integers `device_input`, returns an array of all
+// indices `i` for which `device_input[i] == device_input[i+1]`.
+int find_repeats(int* device_input, int length, int* device_output) {
     int64_t n = nextPow2(length);
 
     // Allocate device_flags and scan_result
@@ -192,8 +200,8 @@ int find_repeats(int* device_input, int64_t length, int* device_output) {
     }
 
     // Compute device_flags
-    int64_t numThreads = THREADS_PER_BLOCK;
-    int64_t numBlocks = (length + numThreads - 1) / numThreads;
+    int numThreads = THREADS_PER_BLOCK;
+    int numBlocks = (length + numThreads - 1) / numThreads;
 
     compute_flags_kernel<<<numBlocks, numThreads>>>(device_input, device_flags, length);
     cudaDeviceSynchronize();
@@ -225,7 +233,8 @@ int find_repeats(int* device_input, int64_t length, int* device_output) {
 }
 
 // cudaFindRepeats --
-double cudaFindRepeats(int* input, int64_t length, int* output, int* output_length) {
+// Timing wrapper around find_repeats.
+double cudaFindRepeats(int* input, int length, int* output, int* output_length) {
     int* device_input;
     int* device_output;
     int64_t rounded_length = nextPow2(length);
