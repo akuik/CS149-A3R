@@ -33,7 +33,6 @@ struct GlobalConstants {
     float* imageData;
 
     // New variables for tiled rendering
-    int numTiles;
     int* circleTileList;
     int* tileCircleCounts;
     int* tileCircleStartIndices;
@@ -57,12 +56,33 @@ __constant__ float  cuConstColorRamp[COLOR_MAP_SIZE][3];
 #include "circleBoxTest.cu_inl"
 #include "noiseCuda.cu_inl"
 #include "lookupColor.cu_inl"
+#include "exclusiveScan.cu_inl"
 
 ////////////////////////////////////////////////////////////////////////////////////////
-// Kernels for advancing animation (same as in the original code)
+// Kernels for advancing animation
 ////////////////////////////////////////////////////////////////////////////////////////
 
-// [Include the existing kernels for advancing animations here]
+// Include the existing kernels for advancing animations here
+
+// kernelAdvanceSnowflake
+__global__ void kernelAdvanceSnowflake() {
+    // [Include the implementation from the original code]
+}
+
+// kernelAdvanceBouncingBalls
+__global__ void kernelAdvanceBouncingBalls() {
+    // [Include the implementation from the original code]
+}
+
+// kernelAdvanceHypnosis
+__global__ void kernelAdvanceHypnosis() {
+    // [Include the implementation from the original code]
+}
+
+// kernelAdvanceFireWorks
+__global__ void kernelAdvanceFireWorks() {
+    // [Include the implementation from the original code]
+}
 
 ////////////////////////////////////////////////////////////////////////////////////////
 // Kernels for rendering
@@ -232,6 +252,16 @@ CudaRenderer::CudaRenderer() {
     cudaCircleTileList = NULL;
     cudaTileCircleCounts = NULL;
     cudaTileCircleStartIndices = NULL;
+
+    totalTiles = 0;
+    maxCirclesPerTile = 0;
+
+    tileWidth = 0;
+    tileHeight = 0;
+    tilesPerRow = 0;
+    tilesPerColumn = 0;
+    imageWidth = 0;
+    imageHeight = 0;
 }
 
 CudaRenderer::~CudaRenderer() {
@@ -340,28 +370,33 @@ CudaRenderer::setup() {
     params.imageData = cudaDeviceImageData;
 
     // Set tile dimensions
-    params.tileWidth = 32;
-    params.tileHeight = 32;
-    params.tilesPerRow = (params.imageWidth + params.tileWidth - 1) / params.tileWidth;
-    int tilesPerColumn = (params.imageHeight + params.tileHeight - 1) / params.tileHeight;
-    params.numTiles = params.tilesPerRow * tilesPerColumn;
+    tileWidth = 32;
+    tileHeight = 32;
+    tilesPerRow = (params.imageWidth + tileWidth - 1) / tileWidth;
+    tilesPerColumn = (params.imageHeight + tileHeight - 1) / tileHeight;
+    totalTiles = tilesPerRow * tilesPerColumn;
+
+    params.tileWidth = tileWidth;
+    params.tileHeight = tileHeight;
+    params.tilesPerRow = tilesPerRow;
 
     // Build circle-tile mapping on the host
-    buildCircleTileLists(params);
+    buildCircleTileLists();
 
     // Copy tile data to device
     cudaMalloc(&cudaCircleTileList, sizeof(int) * totalTiles * maxCirclesPerTile);
-    cudaMalloc(&cudaTileCircleCounts, sizeof(int) * params.numTiles);
-    cudaMalloc(&cudaTileCircleStartIndices, sizeof(int) * params.numTiles);
+    cudaMalloc(&cudaTileCircleCounts, sizeof(int) * totalTiles);
+    cudaMalloc(&cudaTileCircleStartIndices, sizeof(int) * totalTiles);
 
     cudaMemcpy(cudaCircleTileList, circleTileLists, sizeof(int) * totalTiles * maxCirclesPerTile, cudaMemcpyHostToDevice);
-    cudaMemcpy(cudaTileCircleCounts, tileCircleCounts, sizeof(int) * params.numTiles, cudaMemcpyHostToDevice);
-    cudaMemcpy(cudaTileCircleStartIndices, tileCircleStartIndices, sizeof(int) * params.numTiles, cudaMemcpyHostToDevice);
+    cudaMemcpy(cudaTileCircleCounts, tileCircleCounts, sizeof(int) * totalTiles, cudaMemcpyHostToDevice);
+    cudaMemcpy(cudaTileCircleStartIndices, tileCircleStartIndices, sizeof(int) * totalTiles, cudaMemcpyHostToDevice);
 
     params.circleTileList = cudaCircleTileList;
     params.tileCircleCounts = cudaTileCircleCounts;
     params.tileCircleStartIndices = cudaTileCircleStartIndices;
 
+    // Copy parameters to constant memory
     cudaMemcpyToSymbol(cuConstRendererParams, &params, sizeof(GlobalConstants));
 
     // Copy over the noise lookup tables
@@ -385,16 +420,9 @@ CudaRenderer::setup() {
     cudaMemcpyToSymbol(cuConstColorRamp, lookupTable, sizeof(float) * 3 * COLOR_MAP_SIZE);
 }
 
-// Function to build the circle-tile mapping on the host
-void CudaRenderer::buildCircleTileLists(GlobalConstants& params) {
+void CudaRenderer::buildCircleTileLists() {
 
-    int imageWidth = params.imageWidth;
-    int imageHeight = params.imageHeight;
-    int tileWidth = params.tileWidth;
-    int tileHeight = params.tileHeight;
-    int tilesPerRow = params.tilesPerRow;
-    int tilesPerColumn = (imageHeight + tileHeight - 1) / tileHeight;
-    int numTiles = tilesPerRow * tilesPerColumn;
+    int numTiles = totalTiles;
 
     // Initialize per-tile circle lists
     std::vector<std::vector<int>> tileCircleIndices(numTiles);
@@ -404,16 +432,16 @@ void CudaRenderer::buildCircleTileLists(GlobalConstants& params) {
         float rad = radius[c];
 
         // Compute bounding box in image coordinates
-        int minX = static_cast<int>(imageWidth * (p.x - rad));
-        int maxX = static_cast<int>(imageWidth * (p.x + rad)) + 1;
-        int minY = static_cast<int>(imageHeight * (p.y - rad));
-        int maxY = static_cast<int>(imageHeight * (p.y + rad)) + 1;
+        int minX = static_cast<int>(image->width * (p.x - rad));
+        int maxX = static_cast<int>(image->width * (p.x + rad)) + 1;
+        int minY = static_cast<int>(image->height * (p.y - rad));
+        int maxY = static_cast<int>(image->height * (p.y + rad)) + 1;
 
         // Clamp to image boundaries
-        minX = max(minX, 0);
-        maxX = min(maxX, imageWidth - 1);
-        minY = max(minY, 0);
-        maxY = min(maxY, imageHeight - 1);
+        minX = std::max(minX, 0);
+        maxX = std::min(maxX, image->width - 1);
+        minY = std::max(minY, 0);
+        maxY = std::min(maxY, image->height - 1);
 
         // Compute tile indices
         int tileMinX = minX / tileWidth;
@@ -433,26 +461,23 @@ void CudaRenderer::buildCircleTileLists(GlobalConstants& params) {
     tileCircleCounts = new int[numTiles];
     tileCircleStartIndices = new int[numTiles];
 
-    int totalCircles = 0;
-    for (int i = 0; i < numTiles; i++) {
-        tileCircleCounts[i] = tileCircleIndices[i].size();
-        tileCircleStartIndices[i] = totalCircles;
-        totalCircles += tileCircleCounts[i];
-    }
-
-    circleTileLists = new int[totalCircles];
-    int idx = 0;
-    for (int i = 0; i < numTiles; i++) {
-        for (int c : tileCircleIndices[i]) {
-            circleTileLists[idx++] = c;
-        }
-    }
-
-    totalTiles = numTiles;
     maxCirclesPerTile = 0;
     for (int i = 0; i < numTiles; i++) {
+        tileCircleCounts[i] = tileCircleIndices[i].size();
         if (tileCircleCounts[i] > maxCirclesPerTile)
             maxCirclesPerTile = tileCircleCounts[i];
+    }
+
+    int totalCircles = maxCirclesPerTile * numTiles;
+
+    circleTileLists = new int[totalCircles];
+
+    for (int i = 0; i < numTiles; i++) {
+        tileCircleStartIndices[i] = i * maxCirclesPerTile;
+        int offset = tileCircleStartIndices[i];
+        for (int j = 0; j < tileCircleCounts[i]; j++) {
+            circleTileLists[offset + j] = tileCircleIndices[i][j];
+        }
     }
 }
 
@@ -463,6 +488,9 @@ CudaRenderer::allocOutputImage(int width, int height) {
     if (image)
         delete image;
     image = new Image(width, height);
+
+    imageWidth = width;
+    imageHeight = height;
 }
 
 // clearImage --
@@ -472,8 +500,8 @@ CudaRenderer::clearImage() {
     // 256 threads per block is a healthy number
     dim3 blockDim(16, 16, 1);
     dim3 gridDim(
-        (image->width + blockDim.x - 1) / blockDim.x,
-        (image->height + blockDim.y - 1) / blockDim.y);
+        (imageWidth + blockDim.x - 1) / blockDim.x,
+        (imageHeight + blockDim.y - 1) / blockDim.y);
 
     if (sceneName == SNOWFLAKES || sceneName == SNOWFLAKES_SINGLE_FRAME) {
         kernelClearImageSnowflake<<<gridDim, blockDim>>>();
@@ -508,9 +536,7 @@ CudaRenderer::render() {
 
     // Launch kernelRenderTiles with blocks per tile
     dim3 blockDim(16, 16, 1);
-    dim3 gridDim(
-        cuConstRendererParams.tilesPerRow,
-        (cuConstRendererParams.imageHeight + cuConstRendererParams.tileHeight - 1) / cuConstRendererParams.tileHeight);
+    dim3 gridDim(tilesPerRow, tilesPerColumn);
 
     kernelRenderTiles<<<gridDim, blockDim>>>();
     cudaDeviceSynchronize();

@@ -1,57 +1,69 @@
-#ifndef __CUDA_RENDERER_H__
-#define __CUDA_RENDERER_H__
+#ifndef _CUDA_RENDERER_H_
+#define _CUDA_RENDERER_H_
 
-#ifndef uint
-#define uint unsigned int
-#endif
-
+#include "image.h"
+#include "sceneLoader.h"
 #include "circleRenderer.h"
 
-
 class CudaRenderer : public CircleRenderer {
+
+public:
+    CudaRenderer();
+    virtual ~CudaRenderer();
+
+    virtual const Image* getImage();
+    virtual void setup();
+    virtual void loadScene(SceneName scene);
+    virtual void allocOutputImage(int width, int height);
+    virtual void clearImage();
+    virtual void advanceAnimation();
+    virtual void render();
 
 private:
 
     Image* image;
-    SceneName sceneName;
 
+    SceneName sceneName;
     int numCircles;
+
     float* position;
     float* velocity;
     float* color;
     float* radius;
 
+    // Device pointers
     float* cudaDevicePosition;
     float* cudaDeviceVelocity;
     float* cudaDeviceColor;
     float* cudaDeviceRadius;
     float* cudaDeviceImageData;
 
-public:
+    // Host data structures for tiled rendering
+    int* circleTileLists;
+    int* tileCircleCounts;
+    int* tileCircleStartIndices;
 
-    CudaRenderer();
-    virtual ~CudaRenderer();
+    // Device data structures for tiled rendering
+    int* cudaCircleTileList;
+    int* cudaTileCircleCounts;
+    int* cudaTileCircleStartIndices;
 
-    const Image* getImage();
+    // For tile calculations
+    int totalTiles;
+    int maxCirclesPerTile;
 
-    void setup();
+    // Tile dimensions
+    int tileWidth;
+    int tileHeight;
+    int tilesPerRow;
+    int tilesPerColumn;
+    int imageWidth;
+    int imageHeight;
 
-    void loadScene(SceneName name);
+    // Function to build circle-tile mapping
+    void buildCircleTileLists();
 
-    void allocOutputImage(int width, int height);
-
-    void clearImage();
-
-    void advanceAnimation();
-
-    void render();
-
-    void shadePixel(
-        int circleIndex,
-        float pixelCenterX, float pixelCenterY,
-        float px, float py, float pz,
-        float* pixelData);
+    // Other helper functions (if any)
 };
-
 
 #endif
