@@ -15,8 +15,8 @@
 #include "util.h"
 
 ////////////////////////////////////////////////////////////////////////////////////////
-// Putting all the cuda kernels here
-///////////////////////////////////////////////////////////////////////////////////////
+// Putting all the CUDA kernels here
+////////////////////////////////////////////////////////////////////////////////////////
 
 struct GlobalConstants {
 
@@ -48,9 +48,214 @@ __constant__ float  cuConstNoise1DValueTable[256];
 #define COLOR_MAP_SIZE 5
 __constant__ float  cuConstColorRamp[COLOR_MAP_SIZE][3];
 
+// Including parts of the CUDA code from external files
 #include "circleBoxTest.cu_inl"
 #include "noiseCuda.cu_inl"
 #include "lookupColor.cu_inl"
+
+////////////////////////////////////////////////////////////////////////////////////////
+// Kernels for advancing animation (same as in the original code)
+////////////////////////////////////////////////////////////////////////////////////////
+
+// Kernel for advancing the snowflake animation
+__global__ void kernelAdvanceSnowflake() {
+
+    int index = blockIdx.x * blockDim.x + threadIdx.x;
+
+    if (index >= cuConstRendererParams.numCircles)
+        return;
+
+    const float dt = 1.f / 60.f;
+    const float kGravity = -1.8f; // sorry Newton
+    const float kDragCoeff = 2.f;
+
+    int index3 = 3 * index;
+
+    float* positionPtr = &cuConstRendererParams.position[index3];
+    float* velocityPtr = &cuConstRendererParams.velocity[index3];
+
+    // Loads from global memory
+    float3 position = *((float3*)positionPtr);
+    float3 velocity = *((float3*)velocityPtr);
+
+    // Hack to make farther circles move more slowly, giving the
+    // illusion of parallax
+    float forceScaling = fminf(fmaxf(1.f - position.z, .1f), 1.f); // clamp
+
+    // Add some noise to the motion to make the snow flutter
+    float3 noiseInput;
+    noiseInput.x = 10.f * position.x;
+    noiseInput.y = 10.f * position.y;
+    noiseInput.z = 255.f * position.z;
+    float2 noiseForce = cudaVec2CellNoise(noiseInput, index);
+    noiseForce.x *= 7.5f;
+    noiseForce.y *= 5.f;
+
+    // Drag
+    float2 dragForce;
+    dragForce.x = -1.f * kDragCoeff * velocity.x;
+    dragForce.y = -1.f * kDragCoeff * velocity.y;
+
+    // Update positions
+    position.x += velocity.x * dt;
+    position.y += velocity.y * dt;
+
+    // Update velocities
+    velocity.x += forceScaling * (noiseForce.x + dragForce.x) * dt;
+    velocity.y += forceScaling * (kGravity + noiseForce.y + dragForce.y) * dt;
+
+    float radius = cuConstRendererParams.radius[index];
+
+    // If the snowflake has moved off the left, right or bottom of
+    // the screen, place it back at the top and give it a
+    // pseudorandom x position and velocity.
+    if ( (position.y + radius < 0.f) ||
+         (position.x + radius) < -0.f ||
+         (position.x - radius) > 1.f)
+    {
+        noiseInput.x = 255.f * position.x;
+        noiseInput.y = 255.f * position.y;
+        noiseInput.z = 255.f * position.z;
+        noiseForce = cudaVec2CellNoise(noiseInput, index);
+
+        position.x = .5f + .5f * noiseForce.x;
+        position.y = 1.35f + radius;
+
+        // Restart from 0 vertical velocity. Choose a
+        // pseudo-random horizontal velocity.
+        velocity.x = 2.f * noiseForce.y;
+        velocity.y = 0.f;
+    }
+
+    // Store updated positions and velocities to global memory
+    *((float3*)positionPtr) = position;
+    *((float3*)velocityPtr) = velocity;
+}
+
+// Kernel for advancing the bouncing balls animation
+__global__ void kernelAdvanceBouncingBalls() {
+    const float dt = 1.f / 60.f;
+    const float kGravity = -2.8f; // sorry Newton
+    const float kDragCoeff = -0.8f;
+    const float epsilon = 0.001f;
+
+    int index = blockIdx.x * blockDim.x + threadIdx.x;
+
+    if (index >= cuConstRendererParams.numCircles)
+        return;
+
+    float* velocity = cuConstRendererParams.velocity;
+    float* position = cuConstRendererParams.position;
+
+    int index3 = 3 * index;
+    // Reverse velocity if center position < 0
+    float oldVelocity = velocity[index3+1];
+    float oldPosition = position[index3+1];
+
+    if (oldVelocity == 0.f && oldPosition == 0.f) { // stop-condition
+        return;
+    }
+
+    if (position[index3+1] < 0 && oldVelocity < 0.f) { // bounce ball
+        velocity[index3+1] *= kDragCoeff;
+    }
+
+    // Update velocity: v = u + at (only along y-axis)
+    velocity[index3+1] += kGravity * dt;
+
+    // Update positions (only along y-axis)
+    position[index3+1] += velocity[index3+1] * dt;
+
+    if (fabsf(velocity[index3+1] - oldVelocity) < epsilon
+        && oldPosition < 0.0f
+        && fabsf(position[index3+1]-oldPosition) < epsilon) { // stop ball
+        velocity[index3+1] = 0.f;
+        position[index3+1] = 0.f;
+    }
+}
+
+// Kernel for advancing the hypnosis animation
+__global__ void kernelAdvanceHypnosis() {
+    int index = blockIdx.x * blockDim.x + threadIdx.x;
+    if (index >= cuConstRendererParams.numCircles)
+        return;
+
+    float* radius = cuConstRendererParams.radius;
+
+    float cutOff = 0.5f;
+    // Place circle back in center after reaching threshold radius
+    if (radius[index] > cutOff) {
+        radius[index] = 0.02f;
+    } else {
+        radius[index] += 0.01f;
+    }
+}
+
+// Kernel for advancing the fireworks animation
+__global__ void kernelAdvanceFireWorks() {
+    const float dt = 1.f / 60.f;
+    const float pi = 3.14159f;
+    const float maxDist = 0.25f;
+
+    float* velocity = cuConstRendererParams.velocity;
+    float* position = cuConstRendererParams.position;
+    float* radius = cuConstRendererParams.radius;
+
+    int index = blockIdx.x * blockDim.x + threadIdx.x;
+    if (index >= cuConstRendererParams.numCircles)
+        return;
+
+    if (0 <= index && index < NUM_FIREWORKS) { // firework center; no update
+        return;
+    }
+
+    // Determine the firework center/spark indices
+    int fIdx = (index - NUM_FIREWORKS) / NUM_SPARKS;
+    int sfIdx = (index - NUM_FIREWORKS) % NUM_SPARKS;
+
+    int index3i = 3 * fIdx;
+    int sIdx = NUM_FIREWORKS + fIdx * NUM_SPARKS + sfIdx;
+    int index3j = 3 * sIdx;
+
+    float cx = position[index3i];
+    float cy = position[index3i+1];
+
+    // Update position
+    position[index3j] += velocity[index3j] * dt;
+    position[index3j+1] += velocity[index3j+1] * dt;
+
+    // Firework sparks
+    float sx = position[index3j];
+    float sy = position[index3j+1];
+
+    // Compute vector from firework-spark
+    float cxsx = sx - cx;
+    float cysy = sy - cy;
+
+    // Compute distance from firework
+    float dist = sqrtf(cxsx * cxsx + cysy * cysy);
+    if (dist > maxDist) { // restore to starting position
+        // Random starting position on firework's rim
+        float angle = (sfIdx * 2 * pi) / NUM_SPARKS;
+        float sinA = sinf(angle);
+        float cosA = cosf(angle);
+        float x = cosA * radius[fIdx];
+        float y = sinA * radius[fIdx];
+
+        position[index3j] = position[index3i] + x;
+        position[index3j+1] = position[index3i+1] + y;
+        position[index3j+2] = 0.0f;
+
+        // Travel scaled unit length
+        velocity[index3j] = cosA / 5.0f;
+        velocity[index3j+1] = sinA / 5.0f;
+        velocity[index3j+2] = 0.0f;
+    }
+}
+
+////////////////////////////////////////////////////////////////////////////////////////
+// Kernels for rendering
+////////////////////////////////////////////////////////////////////////////////////////
 
 // Kernel to clear the image
 __global__ void kernelClearImage(float r, float g, float b, float a) {
@@ -88,7 +293,7 @@ __global__ void kernelRenderPixels() {
     float2 pixelCenterNorm = make_float2(invWidth * (static_cast<float>(imageX) + 0.5f),
                                          invHeight * (static_cast<float>(imageY) + 0.5f));
 
-    float4 pixelColor = make_float4(0.f, 0.f, 0.f, 0.f);
+    float4 pixelColor = make_float4(1.f, 1.f, 1.f, 1.f);
 
     // Process all circles in order
     for (int c = 0; c < cuConstRendererParams.numCircles; c++) {
@@ -128,12 +333,12 @@ __global__ void kernelRenderPixels() {
             const float kCircleMaxAlpha = .5f;
             const float falloffScale = 4.f;
 
-            float normPixelDist = sqrt(pixelDist) / rad;
+            float normPixelDist = sqrtf(pixelDist) / rad;
             rgb = lookupColor(normPixelDist);
 
             float maxAlpha = .6f + .4f * (1.f - p.z);
             maxAlpha = kCircleMaxAlpha * fmaxf(fminf(maxAlpha, 1.f), 0.f);
-            alpha = maxAlpha * exp(-1.f * falloffScale * normPixelDist * normPixelDist);
+            alpha = maxAlpha * expf(-1.f * falloffScale * normPixelDist * normPixelDist);
 
         } else {
             int index3 = 3 * c;
@@ -153,8 +358,6 @@ __global__ void kernelRenderPixels() {
     int offset = 4 * (imageY * width + imageX);
     *(float4*)(&cuConstRendererParams.imageData[offset]) = pixelColor;
 }
-
-// Other kernels and functions remain the same...
 
 ////////////////////////////////////////////////////////////////////////////////////////
 
@@ -323,7 +526,7 @@ CudaRenderer::advanceAnimation() {
     dim3 gridDim((numCircles + blockDim.x - 1) / blockDim.x);
 
     // Only the snowflake scene has animation
-    if (sceneName == SNOWFLAKES) {
+    if (sceneName == SNOWFLAKES || sceneName == SNOWFLAKES_SINGLE_FRAME) {
         kernelAdvanceSnowflake<<<gridDim, blockDim>>>();
     } else if (sceneName == BOUNCING_BALLS) {
         kernelAdvanceBouncingBalls<<<gridDim, blockDim>>>();
